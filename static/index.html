@@ -28,6 +28,30 @@
         .tag { display: inline-block; background: #e3f2fd; color: #1565c0; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-right: 4px; }
         .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+        /* 报告确认区 */
+        #reportConfirm { display: none; }
+        #reportPreview { background: #fff; border: 1px solid #e0e0e0; border-radius: 4px; padding: 16px; max-height: 500px; overflow-y: auto; line-height: 1.7; font-size: 14px; }
+        #reportPreview h1 { font-size: 20px; color: #1a73e8; border-bottom: 2px solid #1a73e8; padding-bottom: 6px; }
+        #reportPreview h2 { font-size: 17px; color: #333; margin-top: 18px; }
+        #reportPreview h3 { font-size: 15px; color: #555; margin-top: 14px; }
+        #reportPreview ul, #reportPreview ol { padding-left: 24px; }
+        #reportPreview li { margin: 4px 0; }
+        #reportPreview code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+        #reportPreview table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        #reportPreview th, #reportPreview td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; }
+        #reportPreview th { background: #f5f5f5; }
+        #reportPreview blockquote { border-left: 4px solid #1a73e8; margin: 10px 0; padding: 8px 14px; background: #f8f9fa; color: #555; }
+        .report-actions { margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .report-actions label { font-size: 13px; color: #555; }
+        .report-actions input[type="text"] { padding: 7px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; min-width: 320px; }
+        .report-actions input[type="text"]:focus { border-color: #1a73e8; outline: none; }
+        .btn-success { background: #28a745; }
+        .btn-success:hover { background: #1e7e34; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-warning:hover { background: #e0a800; }
+        .version-badge { display: inline-block; background: #e3f2fd; color: #1565c0; padding: 2px 10px; border-radius: 10px; font-size: 12px; }
+        .regenerate-feedback { width: 100%; margin-top: 8px; }
+        .regenerate-feedback textarea { width: 100%; height: 50px; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; resize: vertical; }
     </style>
 </head>
 <body>
@@ -74,6 +98,29 @@
     <div class="card">
         <h4>最终结果</h4>
         <div id="result" style="min-height:60px;">等待执行...</div>
+    </div>
+
+    <!-- 报告确认中间层 -->
+    <div class="card" id="reportConfirm">
+        <h4>📝 报告预览确认 <span class="version-badge" id="reportVersion">v1</span></h4>
+        <div style="margin-bottom:10px; color:#666; font-size:13px;">
+            Agent 已生成报告预览，请确认内容和文件名。满意则保存，不满意可重新生成（覆盖前一份）。
+        </div>
+        <div id="reportPreview"></div>
+        <div class="report-actions">
+            <label>文件名：</label>
+            <input type="text" id="reportFilename" placeholder="报告文件名.md">
+            <button class="btn-success" onclick="confirmReport()">✅ 确认保存</button>
+            <button class="btn-warning" onclick="toggleRegenerateFeedback()">🔄 重新生成</button>
+        </div>
+        <div class="regenerate-feedback" id="regenerateFeedback" style="display:none;">
+            <textarea id="feedbackInput" placeholder="可选：告诉 AI 你希望如何调整（如\"更简洁\"、\"增加数据部分\"、\"换个结构\"等），留空则自动重新组织"></textarea>
+            <div style="margin-top:6px;">
+                <button class="btn-warning" onclick="regenerateReport()">🔄 确认重新生成</button>
+                <button class="secondary" onclick="toggleRegenerateFeedback()">取消</button>
+            </div>
+        </div>
+        <div id="reportStatus" style="margin-top:10px;"></div>
     </div>
 
 <script>
@@ -191,6 +238,11 @@ async function runAgent() {
                         resultDom.textContent = data.answer;
                         logDom.textContent += `\n✅ 任务完成（共 ${data.steps} 步）`;
                         loadHistory();
+                    } else if (eventType === "await_confirm") {
+                        // 报告预览确认事件
+                        logDom.textContent += `\n📝 报告预览已生成（v${data.version}），等待用户确认...`;
+                        showReportConfirm(data.content, data.filename, data.version);
+                        loadHistory();
                     } else if (eventType === "error") {
                         resultDom.innerHTML = `<span class="status-err">❌ ${data.error}</span>`;
                         logDom.textContent += "\n❌ 执行出错";
@@ -226,6 +278,121 @@ async function loadHistory() {
         historyListDom.innerHTML = html;
     } catch (e) {
         historyListDom.innerHTML = "<span class='status-err'>加载历史失败</span>";
+    }
+}
+
+// ========== 报告确认中间层 ==========
+const reportConfirmDom = document.getElementById("reportConfirm");
+const reportPreviewDom = document.getElementById("reportPreview");
+const reportFilenameDom = document.getElementById("reportFilename");
+const reportVersionDom = document.getElementById("reportVersion");
+const reportStatusDom = document.getElementById("reportStatus");
+const regenerateFeedbackDom = document.getElementById("regenerateFeedback");
+const feedbackInputDom = document.getElementById("feedbackInput");
+
+// 简单的 Markdown 渲染（覆盖标题、粗体、列表、代码块、引用、表格）
+function simpleMarkdown(text) {
+    let html = text;
+    // 代码块
+    html = html.replace(/```([\s\S]*?)```/g, (m, code) => `<pre><code>${code.trim()}</code></pre>`);
+    // 行内代码
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    // 标题
+    html = html.replace(/^### (.+)$/gm, "<h3>$1</h3>");
+    html = html.replace(/^## (.+)$/gm, "<h2>$1</h2>");
+    html = html.replace(/^# (.+)$/gm, "<h1>$1</h1>");
+    // 粗体和斜体
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
+    // 引用
+    html = html.replace(/^> (.+)$/gm, "<blockquote>$1</blockquote>");
+    // 无序列表
+    html = html.replace(/^[-*] (.+)$/gm, "<li>$1</li>");
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
+    // 有序列表
+    html = html.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+    // 表格（简单处理）
+    html = html.replace(/^\|(.+)\|$/gm, (m, row) => {
+        const cells = row.split("|").map(c => c.trim());
+        if (cells.every(c => /^[-:]+$/.test(c))) return ""; // 分隔行
+        return "<tr>" + cells.map(c => `<td>${c}</td>`).join("") + "</tr>";
+    });
+    html = html.replace(/(<tr>.*<\/tr>\n?)+/g, m => `<table>${m}</table>`);
+    // 空行转段落
+    html = html.replace(/\n\n/g, "</p><p>");
+    html = "<p>" + html + "</p>";
+    // 清理空段落
+    html = html.replace(/<p><\/p>/g, "");
+    return html;
+}
+
+function showReportConfirm(content, filename, version) {
+    reportPreviewDom.innerHTML = simpleMarkdown(content);
+    reportFilenameDom.value = filename;
+    reportVersionDom.textContent = "v" + version;
+    reportStatusDom.innerHTML = "";
+    reportConfirmDom.style.display = "block";
+    // 滚动到确认区
+    reportConfirmDom.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function hideReportConfirm() {
+    reportConfirmDom.style.display = "none";
+    regenerateFeedbackDom.style.display = "none";
+}
+
+async function confirmReport() {
+    const filename = reportFilenameDom.value.trim();
+    if (!filename) { alert("请输入文件名"); return; }
+    reportStatusDom.innerHTML = '<span class="status-warn">保存中...</span>';
+    try {
+        const resp = await fetch("/confirm-report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: "default", filename: filename })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            reportStatusDom.innerHTML = `<span class="status-ok">✅ 报告已保存：${data.filename}（v${data.version}）</span>`;
+            resultDom.innerHTML = `<span class="status-ok">✅ 报告已保存为 ${data.filename}</span>`;
+            setTimeout(hideReportConfirm, 2000);
+        } else {
+            reportStatusDom.innerHTML = `<span class="status-err">❌ ${data.detail || "保存失败"}</span>`;
+        }
+    } catch (e) {
+        reportStatusDom.innerHTML = `<span class="status-err">❌ 网络错误: ${e}</span>`;
+    }
+}
+
+function toggleRegenerateFeedback() {
+    const isHidden = regenerateFeedbackDom.style.display === "none";
+    regenerateFeedbackDom.style.display = isHidden ? "block" : "none";
+    if (!isHidden) feedbackInputDom.value = "";
+}
+
+async function regenerateReport() {
+    const feedback = feedbackInputDom.value.trim();
+    const userQuery = document.getElementById("queryInput").value.trim();
+    reportStatusDom.innerHTML = '<span class="status-warn">🔄 正在重新生成报告...</span>';
+    try {
+        const resp = await fetch("/regenerate-report", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: "default", user_query: userQuery, feedback: feedback })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            reportPreviewDom.innerHTML = simpleMarkdown(data.content);
+            reportFilenameDom.value = data.filename;
+            reportVersionDom.textContent = "v" + data.version;
+            reportStatusDom.innerHTML = `<span class="status-ok">✅ 已重新生成（v${data.version}），已覆盖前一份</span>`;
+            regenerateFeedbackDom.style.display = "none";
+            feedbackInputDom.value = "";
+        } else {
+            reportStatusDom.innerHTML = `<span class="status-err">❌ ${data.detail || "重新生成失败"}</span>`;
+        }
+    } catch (e) {
+        reportStatusDom.innerHTML = `<span class="status-err">❌ 网络错误: ${e}</span>`;
     }
 }
 </script>

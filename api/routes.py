@@ -17,6 +17,11 @@ from core.parsers import (
     parse_document, calculate_md5,
     load_upload_records, save_upload_record,
 )
+from core.report_manager import (
+    parse_report_preview, store_pending_report, get_pending_report,
+    generate_filename, confirm_save_report, regenerate_report,
+    strip_report_markers,
+)
 from storage.history_db import save_message, get_history
 from storage.vector_store import add_documents
 
@@ -189,8 +194,30 @@ def _agent_stream_generator(user_q: str, session_id: str):
 
         save_message(session_id, "assistant", final_answer)
         logger.info("SSE Agent任务完成, 总步数: %d", step_count)
-        done_data = json.dumps({"answer": final_answer, "steps": step_count}, ensure_ascii=False)
-        yield f"event: done\ndata: {done_data}\n\n"
+
+        # 检测最终回答中是否包含报告预览标记
+        report_data = parse_report_preview(final_answer)
+        if report_data:
+            # 暂存报告预览
+            store_pending_report(session_id, report_data["content"], report_data["meta"])
+            pending = get_pending_report(session_id)
+            suggested_filename = generate_filename(
+                report_data["content"], user_q, pending["version"]
+            )
+            # 发出等待确认事件（不发 done，流程暂停等待用户操作）
+            confirm_data = json.dumps({
+                "content": report_data["content"],
+                "filename": suggested_filename,
+                "version": pending["version"],
+                "steps": step_count,
+            }, ensure_ascii=False)
+            yield f"event: await_confirm\ndata: {confirm_data}\n\n"
+            logger.info("报告预览已发出，等待用户确认: session=%s, version=v%d",
+                        session_id, pending["version"])
+        else:
+            # 普通回答，正常结束
+            done_data = json.dumps({"answer": final_answer, "steps": step_count}, ensure_ascii=False)
+            yield f"event: done\ndata: {done_data}\n\n"
     except Exception as e:
         logger.error("SSE Agent执行失败: %s", e, exc_info=True)
         error_data = json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -259,3 +286,56 @@ async def list_uploaded_files():
         if os.path.isfile(fp) and not f.endswith(".json") and not f.endswith(".db"):
             workspace_files.append(f)
     return {"recorded_files": files, "workspace_files": workspace_files}
+
+
+# ============================================================
+# 报告确认中间层接口
+# ============================================================
+@router.post("/confirm-report")
+async def confirm_report(payload: dict):
+    """
+    确认保存报告接口：
+    - 用户在报告预览区点击"确认保存"后调用
+    - 将暂存的报告写入 workspace 目录
+    - 保存成功后清除暂存
+    """
+    session_id = payload.get("session_id", "default")
+    filename = payload.get("filename", "").strip()
+
+    logger.info("收到报告确认保存: session=%s, filename=%s", session_id, filename)
+    try:
+        result = confirm_save_report(session_id, filename)
+        logger.info("报告确认保存成功: %s", result["filename"])
+        return result
+    except ValueError as e:
+        logger.warning("报告确认保存失败(业务错误): %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("报告确认保存失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"报告保存失败: {e}")
+
+
+@router.post("/regenerate-report")
+async def regenerate(payload: dict):
+    """
+    重新生成报告接口：
+    - 用户在报告预览区点击"重新生成"后调用
+    - 基于已有上下文和用户反馈重新生成一份报告预览
+    - 新报告覆盖前一份暂存，避免占空间
+    """
+    session_id = payload.get("session_id", "default")
+    user_query = payload.get("user_query", "")
+    feedback = payload.get("feedback", "").strip()
+
+    logger.info("收到报告重新生成请求: session=%s, feedback=%s",
+                session_id, feedback[:50] if feedback else "(无)")
+    try:
+        result = regenerate_report(session_id, user_query, feedback)
+        logger.info("报告重新生成成功: version=v%d", result["version"])
+        return result
+    except ValueError as e:
+        logger.warning("报告重新生成失败(业务错误): %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("报告重新生成失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"报告重新生成失败: {e}")

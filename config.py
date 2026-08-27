@@ -45,7 +45,7 @@ logger = logging.getLogger("doc_agent")
 # ============================================================
 # 文本切片器
 # ============================================================
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=80)
 
 # ============================================================
 # 大模型（可插拔：云端API / Ollama本地）
@@ -60,10 +60,21 @@ llm = ChatOpenAI(
 logger.info("大模型初始化完成: %s", os.getenv("LLM_MODEL"))
 
 # ============================================================
-# 向量嵌入模型
+# 向量嵌入模型（独立配置，支持与LLM不同的模型）
 # ============================================================
-logger.info("正在初始化向量嵌入模型...")
+# Embedding 独立配置（硅基流动的对话模型不能直接当Embedding用）
+EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("LLM_API_KEY"))
+EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", os.getenv("LLM_BASE_URL"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", os.getenv("LLM_MODEL"))
+
+logger.info("正在初始化向量嵌入模型: %s", EMBEDDING_MODEL)
 embedding = OpenAIEmbeddings(
-    api_key=os.getenv("LLM_API_KEY"),
-    base_url=os.getenv("LLM_BASE_URL"),
+    api_key=EMBEDDING_API_KEY,
+    base_url=EMBEDDING_BASE_URL,
+    model=EMBEDDING_MODEL,
+    # 非 OpenAI 提供商（SiliconFlow/Ollama/vLLM 等）不支持 token IDs 作为 input，
+    # 必须设为 False 以直接发送原始文本字符串，否则会报 20015 参数无效错误
+    check_embedding_ctx_length=False,
 )
+
+logger.info("向量嵌入模型初始化完成: %s", EMBEDDING_MODEL)

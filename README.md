@@ -6,7 +6,8 @@
 
 ## 版本信息
 
-- **当前版本**：v1.3（模块化重构）
+- **当前版本**：v1.5（报告确认中间层 + 自动命名 + 重新生成）
+- **上一版本**：v1.4.1（嵌入 API 兼容性热修复）
 - **初始版本**：v1.0
 - **最后更新**：2026-08-27
 
@@ -19,6 +20,13 @@
 - **报告导出**：Agent 自动将分析结果整理为 Markdown 报告并保存到本地
 - **工具调用闭环**：基于 LangGraph 状态机实现「思考 → 调用工具 → 观测结果 → 再思考」的 Agent 循环
 - **模型可插拔**：支持云端 LLM API 与 Ollama 本地开源模型一键切换
+
+### v1.5 功能
+- **报告确认中间层**：Agent 生成报告后不直接保存，而是展示预览并暂停，等待用户确认
+- **确认保存**：用户确认报告内容和文件名后，一键保存到 workspace
+- **重新生成**：不满意可重新生成报告（支持填写反馈意见），新报告覆盖前一份暂存，避免占空间
+- **自动命名**：按 `[报告类型]_[主体/范围]_[时间]_[版本].md` 格式自动生成文件名，用户可修改
+- **版本追踪**：每次重新生成版本号递增（v1→v2→v3...），最终保存时记录版本
 
 ### v1.1 功能
 - **增量更新去重**：文件 MD5 哈希校验，重复上传自动跳过，避免向量库冗余
@@ -50,6 +58,7 @@
 │  agents.py  LangGraph状态机 + Prompt     │
 │  tools.py   检索/统计/保存工具           │
 │  parsers.py 6种格式解析 + MD5去重        │
+│  report_manager.py 报告暂存/命名/重生成  │
 ├─────────────────────────────────────────┤
 │  存储层 (storage/)                       │
 │  vector_store.py  Chroma向量库           │
@@ -81,7 +90,8 @@ project_doc_agent/
 │   ├── __init__.py
 │   ├── agents.py       # Agent状态机 + 优化版System Prompt
 │   ├── tools.py        # 工具定义（检索/CSV统计/报告保存）
-│   └── parsers.py      # 多格式文档解析器 + MD5增量去重
+│   ├── parsers.py      # 多格式文档解析器 + MD5增量去重
+│   └── report_manager.py # 报告确认中间层（暂存/自动命名/重新生成/保存）
 ├── api/                # API层
 │   ├── __init__.py
 │   └── routes.py       # FastAPI路由（上传/同步执行/SSE流式/历史/文件列表）+ 限流
@@ -102,6 +112,7 @@ project_doc_agent/
 | `core/agents.py` | Agent核心 | LangGraph状态机、System Prompt、思考节点、条件判断 |
 | `core/tools.py` | Agent工具 | retrieve_doc、csv_stat、save_report（带异常处理） |
 | `core/parsers.py` | 文档解析 | 6种格式解析器、MD5去重、上传记录管理 |
+| `core/report_manager.py` | 报告确认中间层 | 报告预览暂存、自动命名、重新生成、确认保存、标记解析 |
 | `api/routes.py` | API接口 | 5个接口、SSE流式生成器、slowapi限流 |
 | `storage/vector_store.py` | 向量存储 | Chroma初始化、retriever、批量写入 |
 | `storage/history_db.py` | 历史存储 | SQLite初始化、保存消息、查询历史 |
@@ -169,8 +180,13 @@ pytest tests/ -v
 3. **输入分析任务**：在文本框中描述你想要 Agent 完成的分析任务
    - 示例：`总结文档主要内容，并对csv数据做统计，保存为 analysis.md`
 4. **执行任务**：点击「执行Agent任务」，**SSE流式实时展示** Agent 每一步的思考和工具调用
-5. **查看结果**：最终结果实时展示在页面，生成的报告保存在 `workspace/` 目录
-6. **查看历史**：点击「查看对话历史」，右侧面板展示持久化的对话记录
+5. **报告确认**（如任务涉及生成报告）：
+   - Agent 生成报告预览后自动暂停，页面显示「报告预览确认」区
+   - 检查报告内容，确认或修改文件名（自动按 `[报告类型]_[主体]_[时间]_[版本].md` 命名）
+   - 满意则点击「✅ 确认保存」→ 报告写入 workspace
+   - 不满意则点击「🔄 重新生成」→ 可填写反馈意见，AI 重新生成一份报告（覆盖前一份预览，版本号递增）
+6. **查看结果**：最终结果实时展示在页面，生成的报告保存在 `workspace/` 目录
+7. **查看历史**：点击「查看对话历史」，右侧面板展示持久化的对话记录
 
 ## API 接口
 
@@ -182,6 +198,8 @@ pytest tests/ -v
 | POST | `/run-agent/stream` | 10次/分钟 | SSE 流式执行 Agent 任务（实时推送每一步） |
 | GET | `/history` | - | 查询对话历史（参数: `session_id`, `limit`） |
 | GET | `/files` | - | 列出已上传文件列表 |
+| POST | `/confirm-report` | - | 确认保存报告预览（参数: `session_id`, `filename`） |
+| POST | `/regenerate-report` | - | 重新生成报告预览（参数: `session_id`, `user_query`, `feedback`） |
 
 ### SSE 流式接口事件说明
 
@@ -190,6 +208,7 @@ pytest tests/ -v
 | 事件 | data 字段 | 说明 |
 |---|---|---|
 | `step` | `{step, type, content, tool_calls}` | Agent 每执行一步推送一次，type 为 `tool_call` 或 `text` |
+| `await_confirm` | `{content, filename, version, steps}` | 报告预览已生成，等待用户确认（收到此事件后流程暂停，不发 done） |
 | `done` | `{answer, steps}` | 任务完成，返回最终答案和总步数 |
 | `error` | `{error}` | 执行出错，返回错误信息 |
 
@@ -199,7 +218,9 @@ pytest tests/ -v
 |---|---|
 | `retrieve_doc` | 从向量知识库检索相关文档片段 |
 | `csv_stat` | 对 workspace 下的 csv 文件做基础统计 |
-| `save_report` | 将分析报告保存为 Markdown 文件（含路径穿越防护） |
+| `save_report` | 报告保存工具（v1.5 起由系统自动处理，Agent 输出报告预览标记即可） |
+
+> **v1.5 变更**：Agent 不再直接调用 `save_report` 保存报告。当用户要求生成报告时，Agent 用 `===REPORT_PREVIEW===` 标记包裹报告内容输出，系统自动暂存并弹出确认区，由用户确认后保存。
 
 ## Agent Prompt 体系
 
@@ -238,8 +259,72 @@ System Prompt 包含以下模块：
 - 前端默认使用 SSE 流式接口，Agent 每一步实时展示，不会超时
 - 若使用 Ollama 小参数模型（如 8B），工具调用成功率可能下降，建议使用 14B 及以上模型
 - PDF 解析依赖 `pypdf`，Word 解析依赖 `python-docx`，未安装时对应格式会提示安装
+- 使用非 OpenAI 兼容 embeddings 提供商（SiliconFlow、Ollama、vLLM、OpenRouter 等）时，`OpenAIEmbeddings` 必须设置 `check_embedding_ctx_length=False`，否则会发送 token ID 数组导致 API 返回 400 错误（本项目已在 `config.py` 中默认配置）
 
 ## 版本更新记录
+
+### v1.5（2026-08-27）报告确认中间层 + 自动命名 + 重新生成
+
+**核心功能**
+- 新增报告确认中间层：Agent 生成报告后不直接保存，而是展示预览并暂停，等待用户确认
+- 确认保存：用户确认报告内容和文件名后一键保存到 workspace
+- 重新生成：不满意可重新生成报告（支持填写反馈意见），新报告覆盖前一份暂存，避免占空间
+- 自动命名：按 `[报告类型]_[主体/范围]_[时间]_[版本].md` 格式自动生成文件名，用户可修改
+- 版本追踪：每次重新生成版本号递增（v1→v2→v3...）
+
+**新增模块**
+- `core/report_manager.py`：报告暂存（内存字典，按 session_id）、自动命名（类型推断+主体提取）、重新生成（LLM 基于上下文重写）、确认保存、报告标记解析
+
+**协议变更**
+- Agent System Prompt 新增「报告预览输出规范」：用 `===REPORT_PREVIEW===` / `===REPORT_END===` 标记包裹报告内容
+- Agent 不再直接调用 `save_report` 工具，改为输出报告预览标记由系统处理
+- SSE 新增 `await_confirm` 事件：携带报告内容、建议文件名、版本号，收到后流程暂停等待用户操作
+- 新增 API：`POST /confirm-report`（确认保存）、`POST /regenerate-report`（重新生成）
+
+**前端变更**
+- 新增「报告预览确认」卡片：Markdown 渲染预览、文件名输入框、确认保存/重新生成按钮
+- 重新生成支持填写反馈意见（如"更简洁""增加数据部分"）
+- 简单 Markdown 渲染器（标题/粗体/列表/代码/引用/表格）
+
+### v1.4.1（2026-08-27）嵌入 API 兼容性热修复
+
+**根因修复**
+- 彻底修复 SiliconFlow embeddings API 返回 `20015 The parameter is invalid` 的问题
+- 根因：`langchain_openai >= 1.0` 的 `OpenAIEmbeddings` 默认 `check_embedding_ctx_length=True`，会先用 tiktoken 将文本转为 token ID 数组（如 `[[82805, 17161, 22656]]`）再发送；而 SiliconFlow / Ollama / vLLM 等非 OpenAI 提供商的 embeddings 接口只接受文本字符串作为 `input`，不接受 token IDs
+- 修复：在 `config.py` 中显式设置 `check_embedding_ctx_length=False`，直接发送原始文本字符串
+- v1.4 中对 20015 的修复仅补充了 `model` 参数，未触及此根因，问题仍然存在
+
+**配置变更**
+- `config.py` 中 `OpenAIEmbeddings` 初始化新增 `check_embedding_ctx_length=False`
+- 无需修改 `.env`，代码层面自动生效
+
+**兼容性改进**
+- 对所有非 OpenAI 兼容 embeddings 提供商（SiliconFlow、Ollama、vLLM、OpenRouter 等）均生效
+- 保留与官方 OpenAI API 的兼容性（设为 False 后 OpenAI 同样正常工作）
+
+### v1.4（2026-08-27）硅基流动适配 + 嵌入模型优化
+
+**核心修复**
+- 修复 `OpenAIEmbeddings` 初始化时缺失 `model` 参数的问题，现在正确从环境变量读取模型名
+- 新增 `EMBEDDING_MODEL` 环境变量，支持对话模型与嵌入模型独立配置
+- 调整文本切片大小：`chunk_size` 从 600 降至 500，`chunk_overlap` 从 100 降至 80，适配 `BAAI/bge-large-zh-v1.5` 的 512 token 上限
+- 修复向量库写入时报错 `20012 Model does not exist`（补充 `model` 参数）；`20015 The parameter is invalid` 在本版本未完全修复，详见 v1.4.1
+
+**配置变更**
+- `.env` 文件新增 `EMBEDDING_MODEL` 变量，用于指定嵌入模型
+- 若未设置 `EMBEDDING_MODEL`，则自动回退到 `LLM_MODEL` 的值（向后兼容）
+- 推荐配置示例：
+  ```env
+  LLM_API_KEY=sk-你的 key
+  LLM_BASE_URL=https://api.siliconflow.cn/v1
+  LLM_MODEL=deepseek-ai/DeepSeek-V3          # 对话模型（用于问答）
+  EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5     # 嵌入模型（用于向量化）
+  ```
+
+**兼容性改进**
+- 支持硅基流动（SiliconFlow）平台的 Embedding API
+- 支持 `BAAI/bge-large-zh-v1.5`、`BAAI/bge-m3` 等开源嵌入模型
+- 保留与 OpenAI、Ollama 的兼容性
 
 ### v1.3（2026-08-27）模块化重构
 

@@ -39,13 +39,20 @@ env/
 .env.*.local
 
 # Project specific
-chroma_db/          # Vector database (too large for git)
-workspace/          # User uploaded files & generated reports
-logs/               # Log files
-storage/            # Storage data
-.pytest_cache/      # Pytest cache
-*.db                # SQLite databases
-uploaded_files.json # Upload records
+# Vector database (too large for git)
+chroma_db/
+# User uploaded files & generated reports
+workspace/
+# Log files
+logs/
+# Storage data
+storage/
+# Pytest cache
+.pytest_cache/
+# SQLite databases
+*.db
+# Upload records
+uploaded_files.json
 
 # OS files
 .DS_Store
