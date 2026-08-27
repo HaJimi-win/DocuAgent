@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>DocuAgent - 文档智能分析</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { max-width: 1200px; margin: 20px auto; padding: 0 16px; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+        h2 { color: #1a73e8; }
+        h4 { margin-bottom: 6px; color: #333; }
+        textarea { width: 100%; height: 100px; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; }
+        button { padding: 7px 18px; margin: 4px 4px 4px 0; cursor: pointer; background: #1a73e8; color: #fff; border: none; border-radius: 4px; font-size: 14px; }
+        button:hover { background: #1557b0; }
+        button.secondary { background: #6c757d; }
+        button.secondary:hover { background: #545b62; }
+        .card { background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; }
+        #log { background: #f8f9fa; padding: 12px; min-height: 200px; white-space: pre-wrap; border: 1px solid #dee2e6; border-radius: 4px; font-size: 13px; max-height: 400px; overflow-y: auto; }
+        #result { background: #f0f7f0; padding: 14px; border: 1px solid #88c888; border-radius: 4px; white-space: pre-wrap; line-height: 1.6; }
+        #fileList, #historyList { font-size: 13px; color: #555; }
+        .file-item { padding: 4px 0; border-bottom: 1px dashed #eee; }
+        .history-item { padding: 6px 0; border-bottom: 1px solid #f0f0f0; }
+        .history-item .role { font-weight: bold; color: #1a73e8; }
+        .history-item .role.assistant { color: #28a745; }
+        .history-item .time { color: #999; font-size: 12px; margin-left: 8px; }
+        .status-ok { color: #28a745; }
+        .status-warn { color: #ffc107; }
+        .status-err { color: #dc3545; }
+        .tag { display: inline-block; background: #e3f2fd; color: #1565c0; padding: 2px 8px; border-radius: 10px; font-size: 12px; margin-right: 4px; }
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <h2>📄 DocuAgent - 本地文档智能分析</h2>
+
+    <!-- 文件上传区 -->
+    <div class="card">
+        <h4>第一步：上传文档</h4>
+        <div>
+            <span class="tag">TXT</span><span class="tag">CSV</span><span class="tag">PDF</span>
+            <span class="tag">Word(.docx)</span><span class="tag">Excel(.xlsx/.xls)</span>
+        </div>
+        <div style="margin-top:10px;">
+            <input type="file" id="fileInput" accept=".txt,.csv,.pdf,.docx,.xlsx,.xls">
+            <button onclick="uploadFile()">上传并解析</button>
+            <button class="secondary" onclick="loadFileList()">刷新文件列表</button>
+            <span id="uploadStatus" style="margin-left:10px;"></span>
+        </div>
+        <div id="fileList" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- 任务输入区 -->
+    <div class="card">
+        <h4>第二步：输入分析任务</h4>
+        <textarea id="queryInput" placeholder="例如：总结文档主要内容，并统计csv数据，保存为报告"></textarea>
+        <br>
+        <button onclick="runAgent()">执行Agent任务</button>
+        <button class="secondary" onclick="loadHistory()">查看对话历史</button>
+    </div>
+
+    <!-- 两列：执行日志 + 对话历史 -->
+    <div class="two-col">
+        <div class="card">
+            <h4>Agent执行日志（思考 / 工具调用 / 观测）</h4>
+            <div id="log"></div>
+        </div>
+        <div class="card">
+            <h4>对话历史（持久化存储）</h4>
+            <div id="historyList" style="max-height:400px;overflow-y:auto;">点击"查看对话历史"加载</div>
+        </div>
+    </div>
+
+    <!-- 最终结果区 -->
+    <div class="card">
+        <h4>最终结果</h4>
+        <div id="result" style="min-height:60px;">等待执行...</div>
+    </div>
+
+<script>
+const logDom = document.getElementById("log");
+const resultDom = document.getElementById("result");
+const uploadStatus = document.getElementById("uploadStatus");
+const fileListDom = document.getElementById("fileList");
+const historyListDom = document.getElementById("historyList");
+
+// 页面加载时刷新文件列表
+window.onload = function() { loadFileList(); };
+
+// ========== 文件上传 ==========
+async function uploadFile() {
+    const file = document.getElementById("fileInput").files[0];
+    if (!file) { alert("请先选择文件"); return; }
+    const fd = new FormData();
+    fd.append("file", file);
+    uploadStatus.innerHTML = '<span class="status-warn">上传解析中...</span>';
+    try {
+        const resp = await fetch("/upload", { method: "POST", body: fd });
+        const data = await resp.json();
+        if (resp.ok) {
+            if (data.skipped) {
+                uploadStatus.innerHTML = `<span class="status-warn">⚠️ ${data.message}</span>`;
+            } else {
+                uploadStatus.innerHTML = `<span class="status-ok">✅ ${data.message}</span>`;
+            }
+            loadFileList();
+        } else {
+            uploadStatus.innerHTML = `<span class="status-err">❌ ${data.detail || "上传失败"}</span>`;
+        }
+    } catch (e) {
+        uploadStatus.innerHTML = `<span class="status-err">❌ 网络错误: ${e}</span>`;
+    }
+}
+
+// ========== 已上传文件列表 ==========
+async function loadFileList() {
+    try {
+        const resp = await fetch("/files");
+        const data = await resp.json();
+        let html = "";
+        if (data.recorded_files && data.recorded_files.length > 0) {
+            html += "<div style='color:#666;margin-bottom:6px;'>已入库文件（" + data.recorded_files.length + "个）：</div>";
+            data.recorded_files.forEach(f => {
+                const sizeKB = (f.file_size / 1024).toFixed(1);
+                html += `<div class="file-item">📄 <b>${f.filename}</b> | ${f.chunk_count}片段 | ${sizeKB}KB | ${f.upload_time}</div>`;
+            });
+        } else {
+            html = "<div style='color:#999;'>暂无已入库文件</div>";
+        }
+        fileListDom.innerHTML = html;
+    } catch (e) {
+        fileListDom.innerHTML = "<span class='status-err'>加载文件列表失败</span>";
+    }
+}
+
+// ========== 执行Agent（SSE流式输出，实时展示每一步） ==========
+async function runAgent() {
+    const q = document.getElementById("queryInput").value.trim();
+    if (!q) { alert("请输入分析任务"); return; }
+    logDom.textContent = "Agent执行中（流式输出）...\n";
+    resultDom.textContent = "等待结果...";
+
+    try {
+        const resp = await fetch("/run-agent/stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: q, session_id: "default" })
+        });
+
+        if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            logDom.textContent = "执行失败";
+            resultDom.innerHTML = `<span class="status-err">❌ ${err.detail || "请求失败"}</span>`;
+            return;
+        }
+
+        // 用 ReadableStream 解析 SSE 事件流
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let stepCount = 0;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE 事件以 \n\n 分隔
+            const events = buffer.split("\n\n");
+            buffer = events.pop(); // 最后一个可能不完整，留到下次
+
+            for (const eventStr of events) {
+                const lines = eventStr.split("\n");
+                let eventType = "message";
+                let dataStr = "";
+                for (const line of lines) {
+                    if (line.startsWith("event:")) eventType = line.slice(6).trim();
+                    else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+                }
+                if (!dataStr) continue;
+
+                try {
+                    const data = JSON.parse(dataStr);
+                    if (eventType === "step") {
+                        stepCount = data.step;
+                        const typeLabel = data.type === "tool_call"
+                            ? `🔧 工具调用: ${data.tool_calls.join(", ")}`
+                            : "💭 思考";
+                        logDom.textContent += `\n[步骤 ${data.step}] ${typeLabel}\n${data.content}\n---------`;
+                        logDom.scrollTop = logDom.scrollHeight;
+                    } else if (eventType === "done") {
+                        resultDom.textContent = data.answer;
+                        logDom.textContent += `\n✅ 任务完成（共 ${data.steps} 步）`;
+                        loadHistory();
+                    } else if (eventType === "error") {
+                        resultDom.innerHTML = `<span class="status-err">❌ ${data.error}</span>`;
+                        logDom.textContent += "\n❌ 执行出错";
+                    }
+                } catch (parseErr) {
+                    console.warn("SSE解析失败:", parseErr, dataStr);
+                }
+            }
+        }
+    } catch (e) {
+        logDom.textContent = "执行失败";
+        resultDom.innerHTML = `<span class="status-err">❌ 网络错误: ${e}</span>`;
+    }
+}
+
+// ========== 对话历史 ==========
+async function loadHistory() {
+    historyListDom.innerHTML = "加载中...";
+    try {
+        const resp = await fetch("/history?session_id=default&limit=30");
+        const data = await resp.json();
+        if (data.history.length === 0) {
+            historyListDom.innerHTML = "<div style='color:#999;'>暂无对话历史</div>";
+            return;
+        }
+        let html = `<div style='color:#666;margin-bottom:8px;'>共 ${data.count} 条记录</div>`;
+        data.history.forEach(item => {
+            const roleClass = item.role === "user" ? "" : "assistant";
+            const roleLabel = item.role === "user" ? "🧑 用户" : "🤖 Agent";
+            const content = item.content.length > 200 ? item.content.substring(0, 200) + "..." : item.content;
+            html += `<div class="history-item"><span class="role ${roleClass}">${roleLabel}</span><span class="time">${item.time}</span><br>${content}</div>`;
+        });
+        historyListDom.innerHTML = html;
+    } catch (e) {
+        historyListDom.innerHTML = "<span class='status-err'>加载历史失败</span>";
+    }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment variables (contains API keys!)
+.env
+.env.local
+.env.*.local
+
+# Project specific
+chroma_db/          # Vector database (too large for git)
+workspace/          # User uploaded files & generated reports
+logs/               # Log files
+storage/            # Storage data
+.pytest_cache/      # Pytest cache
+*.db                # SQLite databases
+uploaded_files.json # Upload records
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
